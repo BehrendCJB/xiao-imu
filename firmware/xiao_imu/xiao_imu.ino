@@ -11,6 +11,8 @@
 //     data continues. If the buffer fills, the OLDEST samples are dropped,
 //     so you always keep the most recent ~40 seconds.
 //   * Sends over Bluetooth (to ble_bridge.py) and/or USB serial.
+//   * Measures the battery every 10 s: USB gets a "BAT <millivolts>" line,
+//     Bluetooth gets it on the battery characteristic (uint16 mV).
 //
 // USB serial line format (115200 baud):
 //   t_ms,ax,ay,az,gx,gy,gz,backlog
@@ -35,6 +37,23 @@
 
 #define IMU_SERVICE_UUID "8f1c0001-4b6e-4a8e-9f3a-2d6c5e7a1b00"
 #define IMU_DATA_UUID    "8f1c0003-4b6e-4a8e-9f3a-2d6c5e7a1b00"
+#define BATTERY_UUID     "8f1c0004-4b6e-4a8e-9f3a-2d6c5e7a1b00"  // uint16 millivolts
+
+// ---------- battery ----------
+// The XIAO measures its battery through a 1 MOhm / 510 kOhm divider onto
+// P0.31; the divider is switched on by driving P0.14 LOW. Seeed advise keeping
+// P0.14 LOW at all times (it protects that pin while charging); the divider
+// then draws only about 3 microamps.
+#ifndef PIN_VBAT
+#define PIN_VBAT P0_31
+#endif
+#ifndef VBAT_ENABLE
+#define VBAT_ENABLE P0_14
+#endif
+#define BATTERY_PERIOD_MS 10000
+#define VBAT_DIVIDER (1510.0f / 510.0f)
+#define ADC_FULL_SCALE_V 3.6f   // nRF52 ADC default range (0.6 V ref, gain 1/6)
+#define VBAT_CAL 1.000f         // fine-tune against a multimeter if needed
 
 const uint32_t PERIOD_US = 1000000UL / SAMPLE_HZ;
 
@@ -54,6 +73,9 @@ struct __attribute__((packed)) Packet {
 LSM6DS3 imu(I2C_MODE, 0x6A);
 BLEService imuService(IMU_SERVICE_UUID);
 BLECharacteristic imuData(IMU_DATA_UUID, BLERead | BLENotify, sizeof(Packet), true);
+BLEUnsignedShortCharacteristic batteryChar(BATTERY_UUID, BLERead | BLENotify);
+static uint16_t batteryMv = 0;
+static uint32_t lastBatteryMs = 0;
 
 static Sample ring[BUFFER_SAMPLES];
 static uint32_t head = 0;    // next slot to write
@@ -122,6 +144,28 @@ void takeSample() {
   pushSample(s);
 }
 
+uint16_t readBatteryMv() {
+  const int N = 16;
+  uint32_t sum = 0;
+  for (int i = 0; i < N; i++) sum += analogRead(PIN_VBAT);  // ~1 ms in total
+  float v = (sum / (float)N) / 4095.0f * ADC_FULL_SCALE_V * VBAT_DIVIDER * VBAT_CAL;
+  return (uint16_t)lroundf(v * 1000.0f);
+}
+
+// Measure every BATTERY_PERIOD_MS; send as "BAT <mV>" over USB and on the
+// battery characteristic over Bluetooth.
+void updateBattery(bool force) {
+  uint32_t now = millis();
+  if (!force && now - lastBatteryMs < BATTERY_PERIOD_MS) return;
+  lastBatteryMs = now;
+  batteryMv = readBatteryMv();
+  batteryChar.writeValue(batteryMv);
+  if (Serial) {
+    Serial.print("BAT ");
+    Serial.println(batteryMv);
+  }
+}
+
 // ---------- output ----------
 void printSample(const Packet &p) {
   Serial.print(p.s.t_ms);           Serial.print(',');
@@ -166,6 +210,10 @@ void setup() {
   ledRed(false);
   ledBlue(false);
 
+  pinMode(VBAT_ENABLE, OUTPUT);
+  digitalWrite(VBAT_ENABLE, LOW);   // battery divider on; keep LOW (see above)
+  analogReadResolution(12);
+
 #ifdef PIN_LSM6DS3TR_C_POWER
   pinMode(PIN_LSM6DS3TR_C_POWER, OUTPUT);
   digitalWrite(PIN_LSM6DS3TR_C_POWER, HIGH);
@@ -200,6 +248,7 @@ void setup() {
   BLE.setDeviceName(deviceName);
   BLE.setConnectionInterval(6, 12);  // 7.5-15 ms, keeps up with 104 Hz
   imuService.addCharacteristic(imuData);
+  imuService.addCharacteristic(batteryChar);
   BLE.addService(imuService);
   BLE.setAdvertisedService(imuService);
   BLE.advertise();
@@ -207,8 +256,9 @@ void setup() {
   if (Serial) {
     Serial.print("OK ");
     Serial.print(deviceName);
-    Serial.println(" ready (accel+gyro, 104 Hz, buffered)");
+    Serial.println(" ready (accel+gyro, 104 Hz, buffered, battery)");
   }
+  updateBattery(true);
   nextUs = micros();
 }
 
@@ -226,4 +276,5 @@ void loop() {
   }
 
   sendBuffered();
+  updateBattery(false);
 }

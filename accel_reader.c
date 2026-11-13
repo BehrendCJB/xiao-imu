@@ -58,6 +58,7 @@ typedef struct {
     unsigned long t_ms;
     double a[3], g[3];
     unsigned backlog;
+    unsigned bat_mv;      /* battery voltage from "BAT <mV>" lines, 0 = unknown */
 
     /* orientation */
     double q[4];
@@ -181,6 +182,13 @@ static int open_serial(const char *path) {
 }
 
 static void handle_line(Sensor *s, int idx, const char *line) {
+    /* Battery report from the firmware (USB) or the bridge (Bluetooth). */
+    unsigned mv;
+    if (sscanf(line, "BAT %u", &mv) == 1) {
+        s->bat_mv = mv;
+        return;
+    }
+
     unsigned long t;
     double a[3], g[3];
     unsigned backlog = 0;
@@ -275,23 +283,26 @@ static void read_sensor(Sensor *s, int idx) {
 /* One JSON object per line, e.g.
    {"sensors":[{"id":1,"state":"ok","roll":2.1,"pitch":-0.5,"yaw":0.0,
                 "buf":0,"samples":1234,"gaps":0}, ...],"between":2.3}
-   state is "ok", "waiting" (port open, no data yet) or "absent" (not opened). */
+   state is "ok", "waiting" (port open, no data yet) or "absent" (not opened).
+   "bat_mv" (battery millivolts) is added once the board has reported it. */
 static void print_status_json(const Sensor *sensors) {
     printf("{\"sensors\":[");
     for (int i = 0; i < NUM_SENSORS; i++) {
         const Sensor *s = &sensors[i];
         if (i) printf(",");
         if (s->fd < 0) {
-            printf("{\"id\":%d,\"state\":\"absent\"}", i + 1);
+            printf("{\"id\":%d,\"state\":\"absent\"", i + 1);
         } else if (!s->have_data) {
-            printf("{\"id\":%d,\"state\":\"waiting\"}", i + 1);
+            printf("{\"id\":%d,\"state\":\"waiting\"", i + 1);
         } else {
             double r, p, y;
             quat_to_euler(s->q, &r, &p, &y);
             printf("{\"id\":%d,\"state\":\"ok\",\"roll\":%.1f,\"pitch\":%.1f,"
-                   "\"yaw\":%.1f,\"buf\":%u,\"samples\":%lu,\"gaps\":%lu}",
+                   "\"yaw\":%.1f,\"buf\":%u,\"samples\":%lu,\"gaps\":%lu",
                    i + 1, r, p, y, s->backlog, s->samples, s->gaps);
         }
+        if (s->bat_mv) printf(",\"bat_mv\":%u", s->bat_mv);
+        printf("}");
     }
     printf("],\"between\":");
     if (sensors[0].have_data && sensors[1].have_data)
@@ -398,6 +409,7 @@ int main(int argc, char *argv[]) {
                     quat_to_euler(s->q, &r, &p, &y);
                     printf("S%d roll %+6.1f pitch %+6.1f yaw %+6.1f buf %4u",
                            i + 1, r, p, y, s->backlog);
+                    if (s->bat_mv) printf(" bat %.2fV", s->bat_mv / 1000.0);
                 }
                 printf(" | ");
             }

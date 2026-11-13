@@ -57,6 +57,12 @@
   .angles { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-variant-numeric: tabular-nums; }
   .angles dt { color: var(--muted); font-size: 13px; align-self: center; }
   .angles dd { margin: 0; text-align: right; font-size: 20px; font-weight: 600; }
+  .bat { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; color: var(--muted); }
+  .bat .bar { flex: 1; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
+  .bat .fill { height: 100%; width: 0; background: var(--go); transition: width .5s; }
+  .bat.low .fill { background: var(--warn); } .bat.low .txt { color: var(--warn); }
+  .bat.crit .fill { background: var(--stop); } .bat.crit .txt { color: #ff7b72; }
+  .bat .txt { font-variant-numeric: tabular-nums; white-space: nowrap; }
   .meta { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
   .meta .bad { color: var(--warn); }
 
@@ -136,11 +142,37 @@ function sensorCard(id) {
       <dt>Pitch</dt><dd data-k="pitch">--</dd>
       <dt>Yaw</dt><dd data-k="yaw">--</dd>
     </dl>
+    <div class="bat"><span>Battery</span><div class="bar"><div class="fill"></div></div><span class="txt">--</span></div>
     <div class="meta"><span data-k="samples">0 samples</span><span data-k="buf"></span></div>`;
   $("sensors").appendChild(el);
   return el;
 }
 const cards = [sensorCard(1), sensorCard(2)];
+
+// Approximate state of charge for a 1-cell LiPo at light load (mV -> %).
+const LIPO = [[4200,100],[4150,95],[4110,90],[4080,85],[4020,80],[3980,75],[3950,70],[3910,65],
+              [3870,60],[3850,55],[3840,50],[3820,45],[3800,40],[3790,35],[3770,30],[3750,25],
+              [3730,20],[3710,15],[3690,10],[3610,5],[3300,0]];
+function batteryPct(mv) {
+  if (mv >= LIPO[0][0]) return 100;
+  for (let i = 1; i < LIPO.length; i++) {
+    const [v1, p1] = LIPO[i - 1], [v0, p0] = LIPO[i];
+    if (mv >= v0) return Math.round(p0 + (p1 - p0) * (mv - v0) / (v1 - v0));
+  }
+  return 0;
+}
+const lastBattery = {};   // keep the last reading per board between runs
+
+function showBattery(card, id, mv) {
+  if (mv) lastBattery[id] = mv; else mv = lastBattery[id];
+  const box = card.querySelector(".bat");
+  if (!mv) { box.className = "bat"; box.querySelector(".txt").textContent = "--";
+             box.querySelector(".fill").style.width = "0"; return; }
+  const pct = batteryPct(mv);
+  box.className = "bat" + (pct <= 10 ? " crit" : pct <= 25 ? " low" : "");
+  box.querySelector(".fill").style.width = pct + "%";
+  box.querySelector(".txt").textContent = `${pct}% · ${(mv / 1000).toFixed(2)} V`;
+}
 
 function fmt(v) { return (v >= 0 ? "+" : "") + v.toFixed(1) + "°"; }
 
@@ -155,6 +187,7 @@ function showStatus(st) {
       c.querySelector(`[data-k=${k}]`).textContent = s.state === "ok" ? fmt(s[k]) : "--";
     c.querySelector("[data-k=samples]").textContent =
       s.state === "ok" ? `${s.samples} samples${s.gaps ? `, ${s.gaps} gaps` : ""}` : "";
+    showBattery(c, s.id || i + 1, s.bat_mv);
     const buf = c.querySelector("[data-k=buf]");
     buf.textContent = s.state === "ok" ? `buffer ${s.buf}` : "";
     buf.className = s.buf > 20 ? "bad" : "";

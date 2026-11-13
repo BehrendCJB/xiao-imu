@@ -29,6 +29,7 @@ import time
 import tty
 
 IMU_DATA_UUID = "8f1c0003-4b6e-4a8e-9f3a-2d6c5e7a1b00"
+BATTERY_UUID = "8f1c0004-4b6e-4a8e-9f3a-2d6c5e7a1b00"  # uint16 millivolts
 # 18-byte packet: uint32 t_ms, int16 ax,ay,az (milli-g),
 #                 int16 gx,gy,gz (0.1 deg/s), uint16 backlog
 PACKET = struct.Struct("<I6hH")
@@ -93,6 +94,7 @@ async def run_device(name, port, scan_lock):
                 device, disconnected_callback=lambda _c: disconnected.set()
             ) as client:
                 await client.start_notify(IMU_DATA_UUID, on_data)
+                await start_battery(client, name, port)
                 log(name, f"connected -> {port.link_path}")
                 await disconnected.wait()
             log(name, "disconnected, reconnecting...")
@@ -103,17 +105,34 @@ async def run_device(name, port, scan_lock):
             await asyncio.sleep(2)
 
 
+async def start_battery(client, name, port):
+    """Pass the battery level on as a "BAT <mV>" line. Older firmware has no
+    battery characteristic; that's fine, the data still flows."""
+    def on_battery(_char, data: bytearray):
+        if len(data) >= 2:
+            port.write_line(f"BAT {int.from_bytes(data[:2], 'little')}\n")
+    try:
+        await client.start_notify(BATTERY_UUID, on_battery)
+        on_battery(None, await client.read_gatt_char(BATTERY_UUID))
+    except Exception:
+        log(name, "no battery reading (update the firmware to get one)")
+
+
 async def simulate(name, port, index):
     """Fake board: sensor 1 turns slowly around the vertical axis (45 deg/s),
     sensor 2 sits still, tilted 30 degrees."""
     log(name, f"simulating -> {port.link_path}")
     t0 = time.monotonic()
+    next_bat = 2.0
     tilt = math.radians(30) if index == 1 else 0.0
     gz = 45.0 if index == 0 else 0.0
     while True:
         t_ms = int((time.monotonic() - t0) * 1000)
         ay, az = math.sin(tilt), math.cos(tilt)
         port.write_line(f"{t_ms},0.000,{ay:.3f},{az:.3f},0.0,0.0,{gz:.1f},0\n")
+        if t_ms / 1000 >= next_bat:  # fake battery, slowly draining
+            next_bat += 5
+            port.write_line(f"BAT {int(4100 - 120 * index - t_ms / 1000)}\n")
         await asyncio.sleep(1 / 104)
 
 
