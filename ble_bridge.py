@@ -138,6 +138,13 @@ async def simulate(name, port, index):
 
 async def main():
     sim = "--simulate" in sys.argv
+    if not sim:
+        try:
+            import bleak  # noqa: F401
+        except ImportError:
+            print("ERROR: the Bluetooth library 'bleak' is not installed. Run:\n"
+                  "    pip3 install --user --break-system-packages bleak", flush=True)
+            sys.exit(1)
     ports = {name: PtyPort(path) for name, path in DEVICES.items()}
     scan_lock = asyncio.Lock()
     print("Bridge running. Run accel_reader with: "
