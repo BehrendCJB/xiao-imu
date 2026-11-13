@@ -15,6 +15,8 @@ Keep that doc in step when behaviour, formats or setup change.
 |---|---|
 | `accel_reader.c` | C11 reader: polls up to 2 serial ports, Madgwick filter, status line, optional `--csv` log |
 | `ble_bridge.py` | Python 3 + `bleak`: connects to `XIAO-ACCEL-1/2`, exposes them as pseudo serial ports `/tmp/accel1`, `/tmp/accel2`; `--simulate` for no hardware |
+| `ui/ui_server.py` | Python 3 + `aiohttp` web control panel on port 8080: starts/stops the bridge and `accel_reader --json`, streams live angles over a websocket, saves CSVs to `recordings/` |
+| `ui/index.html` | The phone-friendly page (plain HTML/JS, no CDN: pool Wi-Fi may have no internet) |
 | `firmware/xiao_imu/xiao_imu.ino` | Current board firmware (accel + gyro, 104 Hz, BLE + USB, ~40 s buffer) |
 | `firmware/xiao_accel/xiao_accel.ino` | Old USB-only accel firmware (`x,y,z` lines); reader still accepts it |
 | `.project`, `.cproject` | Eclipse CDT **Managed Build** project named `accelerometer_1` (not CMake) |
@@ -28,6 +30,18 @@ Serial line, one per sample: `t_ms,ax,ay,az,gx,gy,gz,backlog`
 BLE notify characteristic `8f1c0003-4b6e-4a8e-9f3a-2d6c5e7a1b00`, 18 bytes,
 `struct` format `<I6hH` (ms, milli-g x3, 0.1 deg/s x3, backlog).
 Change all three sides together if the format changes.
+
+`accel_reader --json` prints one JSON object per 100 ms on stdout
+(`{"sensors":[{"id":1,"state":"ok"|"waiting"|"absent","roll",...}],"between":x|null}`);
+other stdout lines are messages. The UI depends on this; keep it compatible.
+
+## UI
+
+Run from the project folder: `python3 ui/ui_server.py` (deps:
+`pip3 install --user --break-system-packages aiohttp`). It runs Eclipse's
+`Debug/accelerometer_1`, else `./accel_reader` (override with `--reader`).
+New features = a control on the page + an `/api/...` handler in the server.
+Test here with `--simulate` mode via the API or headless Chrome.
 
 ## Build and check
 

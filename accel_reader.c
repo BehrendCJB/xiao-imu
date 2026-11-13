@@ -13,7 +13,11 @@
  *     (accel in g, gyro in deg/s, backlog = samples still waiting on the board)
  *
  * Usage:
- *     ./accel_reader [port1] [port2] [--csv file.csv]
+ *     ./accel_reader [port1] [port2] [--csv file.csv] [--json]
+ *
+ * --json replaces the human-readable status line with one JSON object per
+ * update (10 per second), for ui/ui_server.py. Lines on stdout that don't
+ * start with '{' are ordinary messages.
  * Defaults to /dev/ttyACM0 and /dev/ttyACM1. Ports that can't be opened are
  * skipped, so it also works with just one board.
  *
@@ -63,6 +67,7 @@ typedef struct {
 
 static volatile sig_atomic_t running = 1;
 static FILE *csv = NULL;
+static int json_mode = 0;   /* --json: machine-readable status for the UI */
 
 static void on_sigint(int sig) {
     (void)sig;
@@ -265,6 +270,37 @@ static void read_sensor(Sensor *s, int idx) {
     }
 }
 
+/* ---------------- status output ---------------- */
+
+/* One JSON object per line, e.g.
+   {"sensors":[{"id":1,"state":"ok","roll":2.1,"pitch":-0.5,"yaw":0.0,
+                "buf":0,"samples":1234,"gaps":0}, ...],"between":2.3}
+   state is "ok", "waiting" (port open, no data yet) or "absent" (not opened). */
+static void print_status_json(const Sensor *sensors) {
+    printf("{\"sensors\":[");
+    for (int i = 0; i < NUM_SENSORS; i++) {
+        const Sensor *s = &sensors[i];
+        if (i) printf(",");
+        if (s->fd < 0) {
+            printf("{\"id\":%d,\"state\":\"absent\"}", i + 1);
+        } else if (!s->have_data) {
+            printf("{\"id\":%d,\"state\":\"waiting\"}", i + 1);
+        } else {
+            double r, p, y;
+            quat_to_euler(s->q, &r, &p, &y);
+            printf("{\"id\":%d,\"state\":\"ok\",\"roll\":%.1f,\"pitch\":%.1f,"
+                   "\"yaw\":%.1f,\"buf\":%u,\"samples\":%lu,\"gaps\":%lu}",
+                   i + 1, r, p, y, s->backlog, s->samples, s->gaps);
+        }
+    }
+    printf("],\"between\":");
+    if (sensors[0].have_data && sensors[1].have_data)
+        printf("%.1f}\n", angle_between(sensors[0].q, sensors[1].q));
+    else
+        printf("null}\n");
+    fflush(stdout);
+}
+
 /* ---------------- main ---------------- */
 
 int main(int argc, char *argv[]) {
@@ -275,6 +311,8 @@ int main(int argc, char *argv[]) {
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--csv") == 0 && i + 1 < argc) {
             csv_path = argv[++i];
+        } else if (strcmp(argv[i], "--json") == 0) {
+            json_mode = 1;
         } else if (nports < NUM_SENSORS) {
             ports[nports++] = argv[i];
         }
@@ -344,7 +382,10 @@ int main(int argc, char *argv[]) {
         }
 
         long t = now_ms();
-        if (t - last_print >= PRINT_INTERVAL_MS) {
+        if (t - last_print >= PRINT_INTERVAL_MS && json_mode) {
+            last_print = t;
+            print_status_json(sensors);
+        } else if (t - last_print >= PRINT_INTERVAL_MS) {
             last_print = t;
             for (int i = 0; i < NUM_SENSORS; i++) {
                 Sensor *s = &sensors[i];

@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1720">
+<title>XIAO IMU</title>
+<style>
+  :root {
+    --bg: #0f1720; --panel: #17212c; --line: #26323f; --text: #e6edf3;
+    --muted: #8b98a5; --accent: #3fa7d6; --go: #2ea043; --stop: #d1453b;
+    --warn: #d29922; --radius: 14px;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); }
+  main { max-width: 760px; margin: 0 auto; padding: 16px 14px 40px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 20px; margin: 0; letter-spacing: .3px; }
+  .conn { font-size: 13px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--stop); }
+  .dot.on { background: var(--go); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+            padding: 14px; margin-bottom: 12px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+       margin: 0 0 10px; font-weight: 600; }
+
+  .seg { display: flex; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .seg button { flex: 1; padding: 11px 6px; background: transparent; color: var(--text);
+                border: 0; font-size: 15px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.sel { background: var(--accent); color: #fff; font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: center; margin-top: 12px; }
+  label.check { display: flex; align-items: center; gap: 8px; font-size: 15px; white-space: nowrap; }
+  input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+  input[type=text] { flex: 1; min-width: 0; padding: 10px; border-radius: 10px; border: 1px solid var(--line);
+                     background: var(--bg); color: var(--text); font-size: 15px; }
+  input:disabled, .seg button:disabled { opacity: .5; }
+
+  #go { width: 100%; margin-top: 14px; padding: 18px; font-size: 20px; font-weight: 700;
+        border: 0; border-radius: 12px; color: #fff; background: var(--go); cursor: pointer; }
+  #go.stop { background: var(--stop); }
+  #go:disabled { opacity: .6; cursor: default; }
+  .runline { display: flex; justify-content: space-between; margin-top: 10px; font-size: 14px; color: var(--muted); }
+  #elapsed { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
+
+  .between { text-align: center; padding: 6px 0 14px; }
+  .between .val { font-size: 52px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.05; }
+  .between .lbl { color: var(--muted); font-size: 13px; }
+  .sensors { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .sensor { border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+  .sensor .top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .sensor .name { font-weight: 700; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); color: var(--muted); }
+  .badge.ok { background: rgba(46,160,67,.2); color: #56d364; }
+  .badge.waiting { background: rgba(210,153,34,.2); color: var(--warn); }
+  .angles { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-variant-numeric: tabular-nums; }
+  .angles dt { color: var(--muted); font-size: 13px; align-self: center; }
+  .angles dd { margin: 0; text-align: right; font-size: 20px; font-weight: 600; }
+  .meta { margin-top: 6px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; }
+  .meta .bad { color: var(--warn); }
+
+  ul.files { list-style: none; margin: 0; padding: 0; }
+  ul.files li { display: flex; justify-content: space-between; gap: 10px; padding: 9px 0;
+                border-top: 1px solid var(--line); font-size: 14px; }
+  ul.files li:first-child { border-top: 0; }
+  ul.files a { color: var(--accent); text-decoration: none; word-break: break-all; }
+  .empty { color: var(--muted); font-size: 14px; }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; text-transform: uppercase;
+                    letter-spacing: .8px; font-weight: 600; }
+  #log { margin: 10px 0 0; max-height: 260px; overflow: auto; font: 12px/1.45 ui-monospace, monospace;
+         white-space: pre-wrap; color: #b7c2cd; }
+  .toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--stop);
+           color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px; max-width: 90vw;
+           display: none; }
+  @media (max-width: 420px) { .sensors { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>XIAO IMU</h1>
+    <div class="conn"><span class="dot" id="dot"></span><span id="conntext">connecting…</span></div>
+  </header>
+
+  <section>
+    <h2>Collect data</h2>
+    <div class="seg" id="mode">
+      <button data-mode="usb">USB</button>
+      <button data-mode="ble">Bluetooth</button>
+      <button data-mode="sim">Simulated</button>
+    </div>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="record" checked> Record CSV</label>
+      <input type="text" id="name" placeholder="name (optional), e.g. freestyle-1" maxlength="60">
+    </div>
+    <button id="go" disabled>Start</button>
+    <div class="runline"><span id="runinfo">Stopped</span><span id="elapsed"></span></div>
+  </section>
+
+  <section>
+    <h2>Live</h2>
+    <div class="between"><div class="val" id="between">--</div><div class="lbl">degrees between boards</div></div>
+    <div class="sensors" id="sensors"></div>
+  </section>
+
+  <section>
+    <h2>Recordings</h2>
+    <ul class="files" id="files"></ul>
+  </section>
+
+  <section>
+    <details>
+      <summary>Messages</summary>
+      <pre id="log"></pre>
+    </details>
+  </section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const MODE_NAMES = { usb: "USB", ble: "Bluetooth", sim: "Simulated" };
+let state = { running: false, busy: false };
+let mode = localStorage.getItem("mode") || "usb";
+let clockOffset = 0;   // server time - local time, so the timer is right on any device
+
+// ---------- sensor cards ----------
+function sensorCard(id) {
+  const el = document.createElement("div");
+  el.className = "sensor";
+  el.innerHTML = `
+    <div class="top"><span class="name">Board ${id}</span><span class="badge">--</span></div>
+    <dl class="angles">
+      <dt>Roll</dt><dd data-k="roll">--</dd>
+      <dt>Pitch</dt><dd data-k="pitch">--</dd>
+      <dt>Yaw</dt><dd data-k="yaw">--</dd>
+    </dl>
+    <div class="meta"><span data-k="samples">0 samples</span><span data-k="buf"></span></div>`;
+  $("sensors").appendChild(el);
+  return el;
+}
+const cards = [sensorCard(1), sensorCard(2)];
+
+function fmt(v) { return (v >= 0 ? "+" : "") + v.toFixed(1) + "°"; }
+
+function showStatus(st) {
+  (st.sensors || []).forEach((s, i) => {
+    const c = cards[i]; if (!c) return;
+    const badge = c.querySelector(".badge");
+    const labels = { ok: "live", waiting: "waiting", absent: "not connected" };
+    badge.textContent = labels[s.state] || s.state;
+    badge.className = "badge " + s.state;
+    for (const k of ["roll", "pitch", "yaw"])
+      c.querySelector(`[data-k=${k}]`).textContent = s.state === "ok" ? fmt(s[k]) : "--";
+    c.querySelector("[data-k=samples]").textContent =
+      s.state === "ok" ? `${s.samples} samples${s.gaps ? `, ${s.gaps} gaps` : ""}` : "";
+    const buf = c.querySelector("[data-k=buf]");
+    buf.textContent = s.state === "ok" ? `buffer ${s.buf}` : "";
+    buf.className = s.buf > 20 ? "bad" : "";
+  });
+  $("between").textContent = st.between == null ? "--" : st.between.toFixed(1) + "°";
+}
+
+function clearLive() {
+  showStatus({ sensors: [{ state: "absent" }, { state: "absent" }], between: null });
+  cards.forEach(c => { const b = c.querySelector(".badge"); b.textContent = "--"; b.className = "badge"; });
+}
+
+// ---------- controls ----------
+function render() {
+  document.querySelectorAll("#mode button").forEach(b => {
+    b.classList.toggle("sel", b.dataset.mode === (state.running ? state.mode : mode));
+    b.disabled = state.running || state.busy;
+  });
+  $("record").disabled = $("name").disabled = state.running || state.busy;
+  const go = $("go");
+  go.disabled = state.busy || !ws || ws.readyState !== 1;
+  go.textContent = state.busy ? (state.running ? "Stopping…" : "Starting…") : state.running ? "Stop" : "Start";
+  go.classList.toggle("stop", state.running);
+  $("runinfo").textContent = state.running
+    ? `Running · ${MODE_NAMES[state.mode]}${state.csv ? " · recording" : ""}`
+    : "Stopped";
+}
+
+function tick() {
+  if (state.running && state.started_at) {
+    const s = Math.max(0, Math.floor(Date.now() / 1000 + clockOffset - state.started_at));
+    const m = Math.floor(s / 60), h = Math.floor(m / 60);
+    $("elapsed").textContent = (h ? h + ":" + String(m % 60).padStart(2, "0") : m) + ":" + String(s % 60).padStart(2, "0");
+  } else $("elapsed").textContent = "";
+}
+setInterval(tick, 500);
+
+document.querySelectorAll("#mode button").forEach(b => b.onclick = () => {
+  mode = b.dataset.mode; localStorage.setItem("mode", mode); render();
+});
+$("record").checked = localStorage.getItem("record") !== "0";
+$("record").onchange = () => localStorage.setItem("record", $("record").checked ? "1" : "0");
+
+$("go").onclick = async () => {
+  const starting = !state.running;
+  state.busy = true; render();
+  try {
+    const r = await fetch(starting ? "/api/start" : "/api/stop", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(starting ? { mode, record: $("record").checked, name: $("name").value } : {})
+    });
+    if (!r.ok) toast(await r.text());
+    else if (starting) clearLive();
+  } catch (e) { toast("Can't reach the NUC"); }
+};
+
+function toast(msg) {
+  const t = $("toast"); t.textContent = msg; t.style.display = "block";
+  clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 5000);
+}
+
+// ---------- recordings & log ----------
+function showFiles(files) {
+  const ul = $("files"); ul.innerHTML = "";
+  if (!files.length) { ul.innerHTML = '<li class="empty">No recordings yet</li>'; return; }
+  for (const f of files) {
+    const li = document.createElement("li");
+    const a = document.createElement("a");
+    a.href = "/recordings/" + encodeURIComponent(f.name); a.textContent = f.name;
+    const size = document.createElement("span"); size.className = "empty";
+    size.textContent = f.bytes > 1e6 ? (f.bytes / 1e6).toFixed(1) + " MB" : Math.ceil(f.bytes / 1e3) + " kB";
+    li.append(a, size); ul.appendChild(li);
+  }
+}
+
+function addLog(line) {
+  const log = $("log");
+  const atBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 4;
+  log.textContent += line + "\n";
+  const lines = log.textContent.split("\n");
+  if (lines.length > 300) log.textContent = lines.slice(-300).join("\n");
+  if (atBottom) log.scrollTop = log.scrollHeight;
+}
+
+// ---------- live connection ----------
+let ws;
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => { $("dot").classList.add("on"); $("conntext").textContent = "connected"; render(); };
+  ws.onclose = () => {
+    $("dot").classList.remove("on"); $("conntext").textContent = "reconnecting…"; render();
+    setTimeout(connect, 2000);
+  };
+  ws.onmessage = ev => {
+    const m = JSON.parse(ev.data);
+    if (m.type === "state") {
+      const wasRunning = state.running;
+      state = m; clockOffset = m.server_time - Date.now() / 1000;
+      if (!m.running && !m.busy)   // keep the last values on screen, but say they're not live
+        cards.forEach(c => { const b = c.querySelector(".badge");
+          if (b.textContent !== "--") { b.textContent = "stopped"; b.className = "badge"; } });
+      render(); tick();
+    } else if (m.type === "status") showStatus(m);
+    else if (m.type === "log") addLog(m.line);
+    else if (m.type === "loghistory") { $("log").textContent = ""; m.lines.forEach(addLog); }
+    else if (m.type === "recordings") showFiles(m.files);
+  };
+}
+clearLive(); render(); connect();
+</script>
+</body>
+</html>

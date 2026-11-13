@@ -7,3 +7,4 @@ accel
 accel_reader
 *.csv
 __pycache__/
+recordings/
