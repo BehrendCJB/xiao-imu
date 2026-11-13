@@ -54,13 +54,12 @@ def is_program(p):
 def find_reader(explicit):
     if explicit:
         return Path(explicit).resolve()
-    for p in READER_CANDIDATES:
-        if is_program(p):
-            return p
     # Eclipse names the program after the project, which may have been
-    # renamed: take the newest executable in Debug/ or Release/.
-    found = [p for d in ("Debug", "Release") if (ROOT / d).is_dir()
-             for p in (ROOT / d).iterdir() if is_program(p)]
+    # renamed, and an old hand-built ./accel_reader may be lying around:
+    # take the most recently built of all of them.
+    found = [p for p in READER_CANDIDATES if is_program(p)]
+    found += [p for d in ("Debug", "Release") if (ROOT / d).is_dir()
+              for p in (ROOT / d).iterdir() if is_program(p)]
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
