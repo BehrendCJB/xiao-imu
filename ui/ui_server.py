@@ -47,13 +47,21 @@ READER_CANDIDATES = [ROOT / "Debug" / "accelerometer_1", ROOT / "accel_reader"]
 MODES = ("usb", "ble", "sim")
 
 
+def is_program(p):
+    return p.is_file() and os.access(p, os.X_OK) and p.suffix in ("", ".elf", ".out")
+
+
 def find_reader(explicit):
     if explicit:
         return Path(explicit).resolve()
     for p in READER_CANDIDATES:
-        if p.is_file() and os.access(p, os.X_OK):
+        if is_program(p):
             return p
-    return None
+    # Eclipse names the program after the project, which may have been
+    # renamed: take the newest executable in Debug/ or Release/.
+    found = [p for d in ("Debug", "Release") if (ROOT / d).is_dir()
+             for p in (ROOT / d).iterdir() if is_program(p)]
+    return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
 def lan_addresses():
@@ -167,8 +175,8 @@ class Session:
         reader_path = find_reader(self.reader_arg)
         if reader_path is None or not reader_path.is_file():
             raise web.HTTPBadRequest(
-                text="accel_reader not found: build the project in Eclipse "
-                     "(Debug/accelerometer_1) or run: gcc -O2 -o accel_reader "
+                text=f"accel_reader not found in {ROOT}/Debug or {ROOT}: build "
+                     "the project in Eclipse, or run: gcc -O2 -o accel_reader "
                      "accel_reader.c -lm")
 
         self.busy = True
