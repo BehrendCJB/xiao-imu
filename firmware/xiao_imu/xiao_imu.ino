@@ -55,7 +55,15 @@
 #define VBAT_DIVIDER (1510.0f / 510.0f)
 #define ADC_FULL_SCALE_V 3.3f   // mbed core: ADC full scale = VDD (3.3 V); checked
                                 // 2026-11-14: 4.47 V shown x 3.3/3.6 = 4.10 V vs 4.078 V meter
-#define VBAT_CAL 1.000f         // fine-tune against a multimeter if needed
+// Per-board correction = multimeter volts / panel volts, measured 2026-11-14:
+//   board 1: 4.06 / 4.04 = 1.005    board 2: 3.93 / 3.88 = 1.013
+#if BOARD_ID == 1
+#define VBAT_CAL 1.005f
+#elif BOARD_ID == 2
+#define VBAT_CAL 1.013f
+#else
+#define VBAT_CAL 1.000f         // new board: measure and add a line above
+#endif
 
 const uint32_t PERIOD_US = 1000000UL / SAMPLE_HZ;
 
