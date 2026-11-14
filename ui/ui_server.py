@@ -375,7 +375,9 @@ def list_recordings():
 # ---------- web handlers ----------
 
 async def index(_request):
-    return web.FileResponse(UI_DIR / "index.html")
+    # no-store: phones otherwise keep showing an old page after an update
+    return web.FileResponse(UI_DIR / "index.html",
+                            headers={"Cache-Control": "no-store"})
 
 
 async def ws_handler(request):
