@@ -39,6 +39,9 @@ Change all three sides together if the format changes.
 `accel_reader --json` prints one JSON object per 100 ms on stdout
 (`{"sensors":[{"id":1,"state":"ok"|"waiting"|"absent","roll",...}],"between":x|null}`);
 other stdout lines are messages. The UI depends on this; keep it compatible.
+`--csv-wait` (with `--csv`) opens the file but writes no rows until SIGUSR1;
+the UI starts the reader at Start (boards connect during the start delay)
+and sends SIGUSR1 when collecting begins (later of: delay over, first data).
 
 ## UI
 

@@ -112,7 +112,7 @@
       <label>Start delay (s)<input type="number" id="delay" min="0" max="3600" step="1" inputmode="numeric"></label>
       <label>Collect time (s)<input type="number" id="duration" min="0" max="86400" step="1" inputmode="numeric"></label>
     </div>
-    <div class="hint">Collect time starts when data arrives; 0 = until Stop.</div>
+    <div class="hint">Boards connect during the delay; collecting starts when both the delay is over and data is arriving. Collect time 0 = until Stop.</div>
     <button id="go" disabled>Start</button>
     <div class="progress" id="progress"><div class="fill"></div></div>
     <div class="runline"><span id="runinfo">Stopped</span><span id="elapsed"></span></div>
@@ -242,7 +242,8 @@ function tick() {
   const where = state.mode ? MODE_NAMES[state.mode] + (state.csv ? " · recording" : "") : "";
   info.className = ""; bar.style.display = "none"; $("elapsed").textContent = "";
   if (state.phase === "delay" && state.delay_until) {
-    info.textContent = `Starting in ${Math.max(0, Math.ceil(state.delay_until - now))} s`;
+    info.textContent = `Starting in ${Math.max(0, Math.ceil(state.delay_until - now))} s · `
+                     + (state.have_data ? "boards ready" : "connecting…");
     info.className = "count";
   } else if (state.phase === "delay" || state.phase === "connecting") {
     info.textContent = `Connecting · ${where}`;

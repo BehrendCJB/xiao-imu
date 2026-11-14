@@ -87,11 +87,14 @@ def lan_addresses():
 class Session:
     """Owns the running bridge / reader processes and the shared state.
 
-    A run goes through phases:
-        idle -> delay (countdown) -> connecting (processes started, no data
-        yet) -> collecting (timer running) -> idle
-    The collect timer starts at the first data, so Bluetooth connection time
-    doesn't count; duration 0 means collect until Stop.
+    Start launches the bridge and reader straight away, so the boards connect
+    during the start delay. Phases:
+        delay       countdown running (boards connecting or already sending)
+        connecting  countdown over, still no data
+        collecting  CSV rows being written, collect timer running
+    Collecting begins at whichever comes later: the end of the delay or the
+    first data. The reader runs with --csv-wait and gets SIGUSR1 at that
+    moment, so nothing from the delay is recorded. Duration 0 = until Stop.
     """
 
     def __init__(self, reader_arg):
@@ -104,6 +107,8 @@ class Session:
         self.delay_until = None     # end of the countdown (epoch seconds)
         self.collect_started = None
         self.duration = 0           # seconds, 0 = until Stop
+        self.delay_done = False
+        self.have_data = False      # a board has sent data this run
         self.csv_name = None
         self.status = None          # last JSON status from the reader
         self.timer = None           # countdown / auto-stop task
@@ -123,6 +128,7 @@ class Session:
             "running": self.running,
             "busy": self.busy,
             "phase": self.phase,
+            "have_data": self.have_data,
             "mode": self.mode,
             "delay_until": self.delay_until,
             "started_at": self.collect_started,
@@ -170,9 +176,11 @@ class Session:
                 except ValueError:
                     continue
                 await self.send_all({"type": "status", **self.status})
-                if self.phase == "connecting" and any(
+                if not self.have_data and self.running and any(
                         s.get("state") == "ok" for s in self.status.get("sensors", [])):
-                    await self.begin_collecting()
+                    self.have_data = True
+                    await self.push_state()
+                    await self.maybe_begin()
             else:
                 await self.add_log(f"{prefix} {line}")
 
@@ -202,25 +210,42 @@ class Session:
                 text=f"accel_reader not found in {ROOT}/Debug or {ROOT}: build "
                      "the project in Eclipse, or run: gcc -O2 -o accel_reader "
                      "accel_reader.c -lm")
+        if record and b"--csv-wait" not in reader_path.read_bytes():
+            raise web.HTTPBadRequest(
+                text=f"{reader_path.name} is an old build: in Eclipse do "
+                     "Refresh, Clean Project, Build, then press Start again")
 
         self.mode = mode
         self.duration = duration
         self.csv_name = None
         self.collect_started = None
         self.status = None
-        self.phase = "delay"
-        self.delay_until = time.time() + delay
+        self.have_data = False
+        self.delay_done = delay == 0
+        self.phase = "delay" if delay else "connecting"
+        self.delay_until = time.time() + delay if delay else None
         if delay:
-            await self.add_log(f"[ui] starting in {delay:g} s")
+            await self.add_log(f"[ui] connecting; collecting starts in {delay:g} s "
+                               "or when data arrives, whichever is later")
         await self.push_state()
-        self.timer = self.spawn(self.run(reader_path, mode, record, name, delay))
+        self.timer = self.spawn(self.run(reader_path, mode, record, name))
 
-    async def run(self, reader_path, mode, record, name, delay):
-        if delay:
-            await asyncio.sleep(delay)
-        self.delay_until = None
+    async def run(self, reader_path, mode, record, name):
         if not await self.launch(reader_path, mode, record, name):
             await self.stop()
+            return
+        if self.delay_until:
+            await asyncio.sleep(max(0.0, self.delay_until - time.time()))
+        self.delay_done = True
+        self.delay_until = None
+        if self.phase == "delay":
+            self.phase = "connecting"
+            await self.push_state()
+        await self.maybe_begin()
+
+    async def maybe_begin(self):
+        if self.phase in ("delay", "connecting") and self.delay_done and self.have_data:
+            await self.begin_collecting()
 
     async def launch(self, reader_path, mode, record, name):
         """Start bridge (if needed) and reader. Returns False on failure."""
@@ -249,12 +274,11 @@ class Session:
                 safe = re.sub(r"[^A-Za-z0-9_-]+", "-", name or "").strip("-")
                 stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
                 self.csv_name = f"{stamp}_{safe}.csv" if safe else f"{stamp}.csv"
-                args += ["--csv", str(DATA_DIR / self.csv_name)]
+                args += ["--csv", str(DATA_DIR / self.csv_name), "--csv-wait"]
 
             self.reader = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, cwd=str(ROOT))
-            self.phase = "connecting"
             await self.add_log(f"[ui] started {reader_path.name} ({mode})"
                                + (f", recording {self.csv_name}" if record else ""))
             self.spawn(self.watch_reader(self.reader))
@@ -264,9 +288,11 @@ class Session:
             await self.push_state()
 
     async def begin_collecting(self):
+        if self.csv_name and self.reader and self.reader.returncode is None:
+            self.reader.send_signal(signal.SIGUSR1)   # start writing CSV rows
         self.phase = "collecting"
         self.collect_started = time.time()
-        await self.add_log("[ui] data arriving, collecting"
+        await self.add_log("[ui] collecting"
                            + (f" for {self.duration:g} s" if self.duration else " until Stop"))
         await self.push_state()
         if self.duration:
@@ -327,6 +353,10 @@ class Session:
         self.phase = "idle"
         self.delay_until = None
         self.busy = False
+        if self.csv_name and self.collect_started is None:
+            # never got to collecting: drop the empty (header-only) file
+            (DATA_DIR / self.csv_name).unlink(missing_ok=True)
+            self.csv_name = None
         if self.csv_name:
             await self.add_log(f"[ui] saved recordings/{self.csv_name}")
         await self.add_log("[ui] cancelled" if cancelled else "[ui] stopped")

@@ -13,7 +13,11 @@
  *     (accel in g, gyro in deg/s, backlog = samples still waiting on the board)
  *
  * Usage:
- *     ./accel_reader [port1] [port2] [--csv file.csv] [--json]
+ *     ./accel_reader [port1] [port2] [--csv file.csv [--csv-wait]] [--json]
+ *
+ * --csv-wait opens the CSV file but writes no rows until the program
+ * receives SIGUSR1 (kill -USR1 <pid>); the UI uses this so data from the
+ * start delay isn't recorded.
  *
  * --json replaces the human-readable status line with one JSON object per
  * update (10 per second), for ui/ui_server.py. Lines on stdout that don't
@@ -67,6 +71,14 @@ typedef struct {
 } Sensor;
 
 static volatile sig_atomic_t running = 1;
+/* CSV rows are written only while csv_on is set. --csv-wait clears it at
+   start; SIGUSR1 sets it (the UI sends this when the collect period begins). */
+static volatile sig_atomic_t csv_on = 1;
+
+static void on_sigusr1(int sig) {
+    (void)sig;
+    csv_on = 1;
+}
 static FILE *csv = NULL;
 static int json_mode = 0;   /* --json: machine-readable status for the UI */
 
@@ -208,7 +220,7 @@ static void handle_line(Sensor *s, int idx, const char *line) {
         memset(s->g, 0, sizeof s->g);
         s->backlog = 0;
         s->samples++;
-        if (csv) {
+        if (csv && csv_on) {
             double r, p, y;
             quat_to_euler(s->q, &r, &p, &y);
             fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,,,,%.2f,%.2f,\n",
@@ -244,7 +256,7 @@ static void handle_line(Sensor *s, int idx, const char *line) {
     s->backlog = backlog;
     s->samples++;
 
-    if (csv) {
+    if (csv && csv_on) {
         double r, p, y;
         quat_to_euler(s->q, &r, &p, &y);
         fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f\n",
@@ -324,6 +336,8 @@ int main(int argc, char *argv[]) {
             csv_path = argv[++i];
         } else if (strcmp(argv[i], "--json") == 0) {
             json_mode = 1;
+        } else if (strcmp(argv[i], "--csv-wait") == 0) {
+            csv_on = 0;
         } else if (nports < NUM_SENSORS) {
             ports[nports++] = argv[i];
         }
@@ -335,6 +349,7 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
+    signal(SIGUSR1, on_sigusr1);
 
     int opened = 0;
     for (int i = 0; i < NUM_SENSORS; i++) {
@@ -360,7 +375,8 @@ int main(int argc, char *argv[]) {
         }
         fprintf(csv, "sensor,board_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,"
                      "roll_deg,pitch_deg,yaw_deg\n");
-        printf("Logging every sample to %s\n", csv_path);
+        printf("%s %s\n", csv_on ? "Logging every sample to"
+                              : "CSV ready (waiting for start signal):", csv_path);
     }
 
     printf("Reading... press Ctrl+C (or the red Terminate button) to stop.\n");
@@ -373,8 +389,14 @@ int main(int argc, char *argv[]) {
     }
 
     long last_print = now_ms();
+    int csv_was_on = csv_on;
 
     while (running) {
+        if (csv && csv_on && !csv_was_on) {
+            csv_was_on = 1;
+            printf("CSV recording started\n");
+            fflush(stdout);
+        }
         int rc = poll(pfds, NUM_SENSORS, 20);
         if (rc < 0) {
             if (errno == EINTR) continue;
