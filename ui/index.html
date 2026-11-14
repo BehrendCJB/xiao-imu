@@ -41,6 +41,14 @@
         border: 0; border-radius: 12px; color: #fff; background: var(--go); cursor: pointer; }
   #go.stop { background: var(--stop); }
   #go:disabled { opacity: .6; cursor: default; }
+  .times { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+  .times label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  input[type=number] { width: 100%; padding: 10px; border-radius: 10px; border: 1px solid var(--line);
+                       background: var(--bg); color: var(--text); font-size: 17px; font-variant-numeric: tabular-nums; }
+  .hint { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .progress { height: 6px; border-radius: 3px; background: var(--line); margin-top: 10px; overflow: hidden; display: none; }
+  .progress .fill { height: 100%; width: 0; background: var(--accent); transition: width .5s linear; }
+  #runinfo.count { color: var(--warn); font-weight: 600; }
   .runline { display: flex; justify-content: space-between; margin-top: 10px; font-size: 14px; color: var(--muted); }
   #elapsed { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
 
@@ -100,7 +108,13 @@
       <label class="check"><input type="checkbox" id="record" checked> Record CSV</label>
       <input type="text" id="name" placeholder="name (optional), e.g. freestyle-1" maxlength="60">
     </div>
+    <div class="times">
+      <label>Start delay (s)<input type="number" id="delay" min="0" max="3600" step="1" inputmode="numeric"></label>
+      <label>Collect time (s)<input type="number" id="duration" min="0" max="86400" step="1" inputmode="numeric"></label>
+    </div>
+    <div class="hint">Collect time starts when data arrives; 0 = until Stop.</div>
     <button id="go" disabled>Start</button>
+    <div class="progress" id="progress"><div class="fill"></div></div>
     <div class="runline"><span id="runinfo">Stopped</span><span id="elapsed"></span></div>
   </section>
 
@@ -206,22 +220,41 @@ function render() {
     b.classList.toggle("sel", b.dataset.mode === (state.running ? state.mode : mode));
     b.disabled = state.running || state.busy;
   });
-  $("record").disabled = $("name").disabled = state.running || state.busy;
+  for (const id of ["record", "name", "delay", "duration"]) $(id).disabled = state.running || state.busy;
   const go = $("go");
-  go.disabled = state.busy || !ws || ws.readyState !== 1;
-  go.textContent = state.busy ? (state.running ? "Stopping…" : "Starting…") : state.running ? "Stop" : "Start";
+  go.disabled = (state.busy && !state.running) || !ws || ws.readyState !== 1;
+  go.textContent = state.busy && !state.running ? "Starting…"
+                 : state.phase === "delay" ? "Cancel" : state.running ? "Stop" : "Start";
   go.classList.toggle("stop", state.running);
-  $("runinfo").textContent = state.running
-    ? `Running · ${MODE_NAMES[state.mode]}${state.csv ? " · recording" : ""}`
-    : "Stopped";
+  tick();
 }
 
+function clock(s) {
+  s = Math.max(0, Math.round(s));
+  const m = Math.floor(s / 60), h = Math.floor(m / 60);
+  return (h ? h + ":" + String(m % 60).padStart(2, "0") : m) + ":" + String(s % 60).padStart(2, "0");
+}
+
+// Status line, timer and progress bar for the current phase.
 function tick() {
-  if (state.running && state.started_at) {
-    const s = Math.max(0, Math.floor(Date.now() / 1000 + clockOffset - state.started_at));
-    const m = Math.floor(s / 60), h = Math.floor(m / 60);
-    $("elapsed").textContent = (h ? h + ":" + String(m % 60).padStart(2, "0") : m) + ":" + String(s % 60).padStart(2, "0");
-  } else $("elapsed").textContent = "";
+  const now = Date.now() / 1000 + clockOffset;
+  const info = $("runinfo"), bar = $("progress");
+  const where = state.mode ? MODE_NAMES[state.mode] + (state.csv ? " · recording" : "") : "";
+  info.className = ""; bar.style.display = "none"; $("elapsed").textContent = "";
+  if (state.phase === "delay" && state.delay_until) {
+    info.textContent = `Starting in ${Math.max(0, Math.ceil(state.delay_until - now))} s`;
+    info.className = "count";
+  } else if (state.phase === "delay" || state.phase === "connecting") {
+    info.textContent = `Connecting · ${where}`;
+  } else if (state.phase === "collecting") {
+    const t = now - state.started_at;
+    info.textContent = `Collecting · ${where}`;
+    if (state.duration) {
+      $("elapsed").textContent = `${clock(Math.min(t, state.duration))} / ${clock(state.duration)}`;
+      bar.style.display = "block";
+      bar.firstElementChild.style.width = Math.min(100, 100 * t / state.duration) + "%";
+    } else $("elapsed").textContent = clock(t);
+  } else info.textContent = "Stopped";
 }
 setInterval(tick, 500);
 
@@ -229,15 +262,20 @@ document.querySelectorAll("#mode button").forEach(b => b.onclick = () => {
   mode = b.dataset.mode; localStorage.setItem("mode", mode); render();
 });
 $("record").checked = localStorage.getItem("record") !== "0";
+$("delay").value = localStorage.getItem("delay") ?? 0;
+$("duration").value = localStorage.getItem("duration") ?? 100;
+for (const id of ["delay", "duration"]) $(id).onchange = () => localStorage.setItem(id, $(id).value);
 $("record").onchange = () => localStorage.setItem("record", $("record").checked ? "1" : "0");
 
 $("go").onclick = async () => {
   const starting = !state.running;
-  state.busy = true; render();
+  if (starting) { state.busy = true; render(); }
   try {
     const r = await fetch(starting ? "/api/start" : "/api/stop", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(starting ? { mode, record: $("record").checked, name: $("name").value } : {})
+      body: JSON.stringify(starting ? { mode, record: $("record").checked, name: $("name").value,
+                                       delay: Number($("delay").value) || 0,
+                                       duration: Number($("duration").value) || 0 } : {})
     });
     if (!r.ok) toast(await r.text());
     else if (starting) clearLive();

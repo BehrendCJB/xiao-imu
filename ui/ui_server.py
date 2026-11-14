@@ -4,8 +4,9 @@ ui_server.py - web control panel for the XIAO IMU project.
 
 Serves a page you can open on the NUC or on any phone / laptop on the same
 network. From the page you can start and stop data collection over USB,
-Bluetooth (starts ble_bridge.py for you) or simulated data, optionally
-record a CSV, watch live angles, and download recordings.
+Bluetooth (starts ble_bridge.py for you) or simulated data, with an optional
+start delay and collect time, optionally record a CSV, watch live angles, and
+download recordings.
 
 Under the hood it runs the existing programs:
     accel_reader --json [ports] [--csv recordings/<file>.csv]
@@ -84,21 +85,35 @@ def lan_addresses():
 
 
 class Session:
-    """Owns the running bridge / reader processes and the shared state."""
+    """Owns the running bridge / reader processes and the shared state.
+
+    A run goes through phases:
+        idle -> delay (countdown) -> connecting (processes started, no data
+        yet) -> collecting (timer running) -> idle
+    The collect timer starts at the first data, so Bluetooth connection time
+    doesn't count; duration 0 means collect until Stop.
+    """
 
     def __init__(self, reader_arg):
         self.reader_arg = reader_arg
         self.reader = None          # asyncio subprocess
         self.bridge = None
-        self.running = False
-        self.busy = False           # starting or stopping
+        self.phase = "idle"
+        self.busy = False           # starting or stopping processes
         self.mode = None
-        self.started_at = None
+        self.delay_until = None     # end of the countdown (epoch seconds)
+        self.collect_started = None
+        self.duration = 0           # seconds, 0 = until Stop
         self.csv_name = None
         self.status = None          # last JSON status from the reader
+        self.timer = None           # countdown / auto-stop task
         self.log = collections.deque(maxlen=300)
         self.clients = set()
         self.tasks = set()
+
+    @property
+    def running(self):
+        return self.phase != "idle"
 
     # ---------- broadcasting ----------
 
@@ -107,8 +122,11 @@ class Session:
             "type": "state",
             "running": self.running,
             "busy": self.busy,
+            "phase": self.phase,
             "mode": self.mode,
-            "started_at": self.started_at,
+            "delay_until": self.delay_until,
+            "started_at": self.collect_started,
+            "duration": self.duration,
             "csv": self.csv_name,
             "server_time": time.time(),
         }
@@ -152,6 +170,9 @@ class Session:
                 except ValueError:
                     continue
                 await self.send_all({"type": "status", **self.status})
+                if self.phase == "connecting" and any(
+                        s.get("state") == "ok" for s in self.status.get("sensors", [])):
+                    await self.begin_collecting()
             else:
                 await self.add_log(f"{prefix} {line}")
 
@@ -166,11 +187,15 @@ class Session:
 
     # ---------- start / stop ----------
 
-    async def start(self, mode, record, name):
+    async def start(self, mode, record, name, delay=0.0, duration=0.0):
         if self.running or self.busy:
             raise web.HTTPConflict(text="already running")
         if mode not in MODES:
             raise web.HTTPBadRequest(text="mode must be usb, ble or sim")
+        if not (0 <= delay <= 3600):
+            raise web.HTTPBadRequest(text="delay must be 0 to 3600 seconds")
+        if not (0 <= duration <= 86400):
+            raise web.HTTPBadRequest(text="collect time must be 0 to 86400 seconds")
         reader_path = find_reader(self.reader_arg)
         if reader_path is None or not reader_path.is_file():
             raise web.HTTPBadRequest(
@@ -178,6 +203,27 @@ class Session:
                      "the project in Eclipse, or run: gcc -O2 -o accel_reader "
                      "accel_reader.c -lm")
 
+        self.mode = mode
+        self.duration = duration
+        self.csv_name = None
+        self.collect_started = None
+        self.status = None
+        self.phase = "delay"
+        self.delay_until = time.time() + delay
+        if delay:
+            await self.add_log(f"[ui] starting in {delay:g} s")
+        await self.push_state()
+        self.timer = self.spawn(self.run(reader_path, mode, record, name, delay))
+
+    async def run(self, reader_path, mode, record, name, delay):
+        if delay:
+            await asyncio.sleep(delay)
+        self.delay_until = None
+        if not await self.launch(reader_path, mode, record, name):
+            await self.stop()
+
+    async def launch(self, reader_path, mode, record, name):
+        """Start bridge (if needed) and reader. Returns False on failure."""
         self.busy = True
         await self.push_state()
         try:
@@ -195,11 +241,9 @@ class Session:
                 await self.add_log(f"[ui] started bridge ({mode})")
                 if not await self.wait_for_ports(ports, t0):
                     await self.add_log("[ui] bridge did not create its ports")
-                    await self.stop_bridge()
-                    return
+                    return False
 
             args = [str(reader_path), *ports, "--json"]
-            self.csv_name = None
             if record:
                 DATA_DIR.mkdir(exist_ok=True)
                 safe = re.sub(r"[^A-Za-z0-9_-]+", "-", name or "").strip("-")
@@ -210,16 +254,28 @@ class Session:
             self.reader = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, cwd=str(ROOT))
-            self.status = None
-            self.mode = mode
-            self.running = True
-            self.started_at = time.time()
+            self.phase = "connecting"
             await self.add_log(f"[ui] started {reader_path.name} ({mode})"
                                + (f", recording {self.csv_name}" if record else ""))
             self.spawn(self.watch_reader(self.reader))
+            return True
         finally:
             self.busy = False
             await self.push_state()
+
+    async def begin_collecting(self):
+        self.phase = "collecting"
+        self.collect_started = time.time()
+        await self.add_log("[ui] data arriving, collecting"
+                           + (f" for {self.duration:g} s" if self.duration else " until Stop"))
+        await self.push_state()
+        if self.duration:
+            self.timer = self.spawn(self.auto_stop(self.duration))
+
+    async def auto_stop(self, seconds):
+        await asyncio.sleep(seconds)
+        await self.add_log(f"[ui] collect time of {seconds:g} s reached")
+        await self.stop()
 
     async def wait_for_ports(self, ports, since, timeout=5.0):
         end = time.time() + timeout
@@ -256,17 +312,24 @@ class Session:
     async def stop(self, reader_done=False):
         if not self.running and not self.bridge:
             return
+        # Cancel a pending countdown / auto-stop (unless that's who called us).
+        timer, self.timer = self.timer, None
+        if timer and timer is not asyncio.current_task() and not timer.done():
+            timer.cancel()
+            await asyncio.gather(timer, return_exceptions=True)
+        cancelled = self.phase == "delay"
         self.busy = True
         await self.push_state()
         reader, self.reader = self.reader, None
         if not reader_done:
             await self.end_process(reader)
         await self.stop_bridge()
-        self.running = False
+        self.phase = "idle"
+        self.delay_until = None
         self.busy = False
         if self.csv_name:
             await self.add_log(f"[ui] saved recordings/{self.csv_name}")
-        await self.add_log("[ui] stopped")
+        await self.add_log("[ui] cancelled" if cancelled else "[ui] stopped")
         await self.push_state()
         await self.send_all({"type": "recordings", "files": list_recordings()})
 
@@ -306,8 +369,14 @@ async def ws_handler(request):
 
 async def api_start(request):
     body = await request.json() if request.can_read_body else {}
+    try:
+        delay = float(body.get("delay", 0) or 0)
+        duration = float(body.get("duration", 0) or 0)
+    except (TypeError, ValueError):
+        raise web.HTTPBadRequest(text="delay and collect time must be numbers")
     await request.app["session"].start(
-        body.get("mode", "usb"), bool(body.get("record")), body.get("name", ""))
+        body.get("mode", "usb"), bool(body.get("record")), body.get("name", ""),
+        delay, duration)
     return web.json_response(request.app["session"].state())
 
 
