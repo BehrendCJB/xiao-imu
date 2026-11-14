@@ -162,6 +162,7 @@ class Session:
     def __init__(self, reader_arg):
         self.reader_arg = reader_arg
         self.reader = None          # asyncio subprocess
+        self.reader_path = None
         self.bridge = None
         self.phase = "idle"
         self.busy = False           # starting or stopping processes
@@ -345,6 +346,7 @@ class Session:
                 self.csv_name = f"{stamp}_{safe}.csv" if safe else f"{stamp}.csv"
                 args += ["--csv", str(DATA_DIR / self.csv_name), "--csv-wait"]
 
+            self.reader_path = reader_path
             self.reader = await asyncio.create_subprocess_exec(
                 *args, stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE, cwd=str(ROOT))
@@ -371,6 +373,16 @@ class Session:
         await asyncio.sleep(seconds)
         await self.add_log(f"[ui] collect time of {seconds:g} s reached")
         await self.stop()
+
+    async def zero(self):
+        """Make the boards' current pose the reference (angles read 0)."""
+        if not self.reader or self.reader.returncode is not None:
+            raise web.HTTPConflict(text="Press Start first: Zero works while the boards are running")
+        if b"Zeroed:" not in self.reader_path.read_bytes():
+            raise web.HTTPBadRequest(
+                text=f"{self.reader_path.name} is an old build: in Eclipse do Refresh, "
+                     "Clean Project, Build, then restart the run")
+        self.reader.send_signal(signal.SIGUSR2)   # reader replies "Zeroed: ..."
 
     async def wait_for_ports(self, ports, since, timeout=5.0):
         end = time.time() + timeout
@@ -486,6 +498,11 @@ async def api_stop(request):
     return web.json_response(request.app["session"].state())
 
 
+async def api_zero(request):
+    await request.app["session"].zero()
+    return web.json_response({"ok": True})
+
+
 async def api_recordings(_request):
     return web.json_response(list_recordings())
 
@@ -515,6 +532,7 @@ def main():
     app.router.add_get("/ws", ws_handler)
     app.router.add_post("/api/start", api_start)
     app.router.add_post("/api/stop", api_stop)
+    app.router.add_post("/api/zero", api_zero)
     app.router.add_get("/api/recordings", api_recordings)
     app.router.add_get("/recordings/{name}", download)
     app.on_shutdown.append(on_shutdown)

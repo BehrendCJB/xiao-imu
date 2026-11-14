@@ -15,6 +15,10 @@
  * Usage:
  *     ./accel_reader [port1] [port2] [--csv file.csv [--csv-wait]] [--json]
  *
+ * Zero: on SIGUSR2 (kill -USR2 <pid>) the current pose of each board becomes
+ * its reference; from then on roll / pitch / yaw and "between" are shown
+ * relative to it (CSV keeps the absolute angles and adds roll0/pitch0/yaw0).
+ *
  * --csv-wait opens the CSV file but writes no rows until the program
  * receives SIGUSR1 (kill -USR1 <pid>); the UI uses this so data from the
  * start delay isn't recorded.
@@ -67,6 +71,8 @@ typedef struct {
     /* orientation */
     double q[4];
     int have_data;
+    double q0[4];         /* reference pose from the last Zero */
+    int zeroed;
     unsigned long samples, gaps;
 } Sensor;
 
@@ -74,6 +80,14 @@ static volatile sig_atomic_t running = 1;
 /* CSV rows are written only while csv_on is set. --csv-wait clears it at
    start; SIGUSR1 sets it (the UI sends this when the collect period begins). */
 static volatile sig_atomic_t csv_on = 1;
+
+/* SIGUSR2 = Zero: make the current pose of every board the reference. */
+static volatile sig_atomic_t zero_req = 0;
+
+static void on_sigusr2(int sig) {
+    (void)sig;
+    zero_req = 1;
+}
 
 static void on_sigusr1(int sig) {
     (void)sig;
@@ -166,6 +180,32 @@ static double angle_between(const double a[4], const double b[4]) {
     return 2 * acos(d) * DEG;
 }
 
+static void quat_conj(const double q[4], double o[4]) {
+    o[0] = q[0]; o[1] = -q[1]; o[2] = -q[2]; o[3] = -q[3];
+}
+
+/* o = a * b (Hamilton product) */
+static void quat_mul(const double a[4], const double b[4], double o[4]) {
+    double r[4] = {
+        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+        a[0] * b[1] + a[1] * b[0] + a[2] * b[3] - a[3] * b[2],
+        a[0] * b[2] - a[1] * b[3] + a[2] * b[0] + a[3] * b[1],
+        a[0] * b[3] + a[1] * b[2] - a[2] * b[1] + a[3] * b[0],
+    };
+    memcpy(o, r, sizeof r);
+}
+
+/* After lost data: correct roll / pitch from gravity but keep the heading
+   (yaw), so the boards' yaw difference survives the gap. */
+static void relevel_keep_yaw(double q[4], const double a[3]) {
+    double r, p, y, tilt[4];
+    quat_to_euler(q, &r, &p, &y);
+    quat_from_accel(tilt, a);
+    double qz[4] = { cos(y * RAD / 2), 0, 0, sin(y * RAD / 2) };
+    quat_mul(qz, tilt, q);
+    quat_normalize(q);
+}
+
 /* ---------------- serial input ---------------- */
 
 static int open_serial(const char *path) {
@@ -191,6 +231,37 @@ static int open_serial(const char *path) {
     }
     tcflush(fd, TCIFLUSH);
     return fd;
+}
+
+/* Orientation relative to the Zero pose (in the board's own frame), or the
+   absolute orientation if the board hasn't been zeroed. */
+static void rel_orientation(const Sensor *s, double out[4]) {
+    if (s->zeroed) {
+        double c[4];
+        quat_conj(s->q0, c);
+        quat_mul(c, s->q, out);
+    } else {
+        memcpy(out, s->q, sizeof s->q);
+    }
+}
+
+static void rel_euler(const Sensor *s, double *r, double *p, double *y) {
+    double q[4];
+    rel_orientation(s, q);
+    quat_to_euler(q, r, p, y);
+}
+
+/* Angle between the boards. Once both are zeroed it is how far board 2 has
+   turned relative to board 1 since the Zero (0 at the Zero pose). */
+static double between_deg(const Sensor *a, const Sensor *b) {
+    if (!(a->zeroed && b->zeroed)) return angle_between(a->q, b->q);
+    double ca[4], now[4], c0[4], ref[4], cref[4], d[4];
+    quat_conj(a->q, ca);   quat_mul(ca, b->q, now);    /* board 2 seen from board 1 */
+    quat_conj(a->q0, c0);  quat_mul(c0, b->q0, ref);   /* same, at the Zero */
+    quat_conj(ref, cref);  quat_mul(cref, now, d);
+    double w = fabs(d[0]);
+    if (w > 1) w = 1;
+    return 2 * acos(w) * DEG;
 }
 
 static void handle_line(Sensor *s, int idx, const char *line) {
@@ -223,10 +294,11 @@ static void handle_line(Sensor *s, int idx, const char *line) {
         s->backlog = 0;
         s->samples++;
         if (csv && csv_on) {
-            double r, p, y;
+            double r, p, y, r0, p0, y0;
             quat_to_euler(s->q, &r, &p, &y);
-            fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,,,,%.2f,%.2f,\n",
-                    idx + 1, s->t_ms, a[0], a[1], a[2], r, p);
+            rel_euler(s, &r0, &p0, &y0);
+            fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,,,,%.2f,%.2f,,%.2f,%.2f,\n",
+                    idx + 1, s->t_ms, a[0], a[1], a[2], r, p, r0, p0);
         }
         return;
     }
@@ -243,8 +315,8 @@ static void handle_line(Sensor *s, int idx, const char *line) {
     } else {
         double dt = ((long)(t - s->t_ms)) / 1000.0;
         if (dt > MAX_GAP_S || dt < 0) {
-            s->gaps++;               /* data was lost: re-level from gravity */
-            quat_from_accel(s->q, a);
+            s->gaps++;   /* data was lost: re-level tilt, keep yaw */
+            relevel_keep_yaw(s->q, a);
         } else {
             if (dt == 0) dt = NOMINAL_DT;
             madgwick_update(s->q, g[0] * RAD, g[1] * RAD, g[2] * RAD,
@@ -259,10 +331,11 @@ static void handle_line(Sensor *s, int idx, const char *line) {
     s->samples++;
 
     if (csv && csv_on) {
-        double r, p, y;
+        double r, p, y, r0, p0, y0;
         quat_to_euler(s->q, &r, &p, &y);
-        fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f\n",
-                idx + 1, t, a[0], a[1], a[2], g[0], g[1], g[2], r, p, y);
+        rel_euler(s, &r0, &p0, &y0);
+        fprintf(csv, "%d,%lu,%.3f,%.3f,%.3f,%.1f,%.1f,%.1f,%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\n",
+                idx + 1, t, a[0], a[1], a[2], g[0], g[1], g[2], r, p, y, r0, p0, y0);
     }
 }
 
@@ -310,17 +383,18 @@ static void print_status_json(const Sensor *sensors) {
             printf("{\"id\":%d,\"state\":\"waiting\"", i + 1);
         } else {
             double r, p, y;
-            quat_to_euler(s->q, &r, &p, &y);
+            rel_euler(s, &r, &p, &y);
             printf("{\"id\":%d,\"state\":\"ok\",\"roll\":%.1f,\"pitch\":%.1f,"
                    "\"yaw\":%.1f,\"buf\":%u,\"samples\":%lu,\"gaps\":%lu",
                    i + 1, r, p, y, s->backlog, s->samples, s->gaps);
         }
         if (s->bat_mv) printf(",\"bat_mv\":%u", s->bat_mv);
+        if (s->zeroed) printf(",\"zeroed\":true");
         printf("}");
     }
     printf("],\"between\":");
     if (sensors[0].have_data && sensors[1].have_data)
-        printf("%.1f}\n", angle_between(sensors[0].q, sensors[1].q));
+        printf("%.1f}\n", between_deg(&sensors[0], &sensors[1]));
     else
         printf("null}\n");
     fflush(stdout);
@@ -352,6 +426,7 @@ int main(int argc, char *argv[]) {
     signal(SIGINT, on_sigint);
     signal(SIGTERM, on_sigint);
     signal(SIGUSR1, on_sigusr1);
+    signal(SIGUSR2, on_sigusr2);
 
     int opened = 0;
     for (int i = 0; i < NUM_SENSORS; i++) {
@@ -376,7 +451,7 @@ int main(int argc, char *argv[]) {
             return EXIT_FAILURE;
         }
         fprintf(csv, "sensor,board_ms,ax_g,ay_g,az_g,gx_dps,gy_dps,gz_dps,"
-                     "roll_deg,pitch_deg,yaw_deg\n");
+                     "roll_deg,pitch_deg,yaw_deg,roll0_deg,pitch0_deg,yaw0_deg\n");
         printf("%s %s\n", csv_on ? "Logging every sample to"
                               : "CSV ready (waiting for start signal):", csv_path);
     }
@@ -394,6 +469,23 @@ int main(int argc, char *argv[]) {
     int csv_was_on = csv_on;
 
     while (running) {
+        if (zero_req) {
+            zero_req = 0;
+            char msg[96] = "Zeroed:";
+            for (int i = 0; i < NUM_SENSORS; i++) {
+                Sensor *z = &sensors[i];
+                if (z->fd >= 0 && z->have_data) {
+                    memcpy(z->q0, z->q, sizeof z->q);
+                    z->zeroed = 1;
+                    snprintf(msg + strlen(msg), sizeof msg - strlen(msg), " board %d", i + 1);
+                } else if (z->fd >= 0) {
+                    snprintf(msg + strlen(msg), sizeof msg - strlen(msg),
+                             " (board %d has no data yet)", i + 1);
+                }
+            }
+            printf("%s\n", msg);
+            fflush(stdout);
+        }
         if (csv && csv_on && !csv_was_on) {
             csv_was_on = 1;
             printf("CSV recording started\n");
@@ -430,7 +522,7 @@ int main(int argc, char *argv[]) {
                     printf("S%d (waiting for data)                           ", i + 1);
                 } else {
                     double r, p, y;
-                    quat_to_euler(s->q, &r, &p, &y);
+                    rel_euler(s, &r, &p, &y);
                     printf("S%d roll %+6.1f pitch %+6.1f yaw %+6.1f buf %4u",
                            i + 1, r, p, y, s->backlog);
                     if (s->bat_mv) printf(" bat %.2fV", s->bat_mv / 1000.0);
@@ -438,7 +530,7 @@ int main(int argc, char *argv[]) {
                 printf(" | ");
             }
             if (sensors[0].have_data && sensors[1].have_data)
-                printf("between %5.1f deg\n", angle_between(sensors[0].q, sensors[1].q));
+                printf("between %5.1f deg\n", between_deg(&sensors[0], &sensors[1]));
             else
                 printf("between   --\n");
             fflush(stdout);

@@ -52,6 +52,13 @@
   .runline { display: flex; justify-content: space-between; margin-top: 10px; font-size: 14px; color: var(--muted); }
   #elapsed { font-variant-numeric: tabular-nums; color: var(--text); font-weight: 600; }
 
+  .livehead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+  .livehead h2 { margin: 0; }
+  #zero { padding: 9px 18px; border-radius: 10px; border: 1px solid var(--accent); background: transparent;
+          color: var(--accent); font-size: 15px; font-weight: 600; cursor: pointer; }
+  #zero:disabled { opacity: .4; cursor: default; }
+  .zeroinfo { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .zeroinfo.on { color: #56d364; }
   .between { text-align: center; padding: 6px 0 14px; }
   .between .val { font-size: 52px; font-weight: 700; font-variant-numeric: tabular-nums; line-height: 1.05; }
   .between .lbl { color: var(--muted); font-size: 13px; }
@@ -119,7 +126,11 @@
   </section>
 
   <section>
-    <h2>Live</h2>
+    <div class="livehead">
+      <h2>Live</h2>
+      <button id="zero" disabled title="Hold both boards in the reference pose, then press">Zero</button>
+    </div>
+    <div class="zeroinfo" id="zeroinfo">Not zeroed: angles are absolute, yaw starts wherever each board points.</div>
     <div class="between"><div class="val" id="between">--</div><div class="lbl">degrees between boards</div></div>
     <div class="sensors" id="sensors"></div>
   </section>
@@ -231,6 +242,8 @@ function render() {
   go.textContent = state.busy && !state.running ? "Starting…"
                  : state.phase === "delay" ? "Cancel" : state.running ? "Stop" : "Start";
   go.classList.toggle("stop", state.running);
+  $("zero").disabled = !(state.running && state.have_data);
+  if (!state.running) setZeroInfo(false);
   tick();
 }
 
@@ -288,6 +301,20 @@ $("go").onclick = async () => {
   } catch (e) { toast("Can't reach the NUC"); }
 };
 
+function setZeroInfo(on, when) {
+  const z = $("zeroinfo");
+  z.className = "zeroinfo" + (on ? " on" : "");
+  z.textContent = on ? `Zeroed at ${when}: angles are relative to that pose.`
+                     : "Not zeroed: angles are absolute, yaw starts wherever each board points.";
+}
+
+$("zero").onclick = async () => {
+  try {
+    const r = await fetch("/api/zero", { method: "POST" });
+    if (!r.ok) toast(await r.text());
+  } catch (e) { toast("Can't reach the NUC"); }
+};
+
 function toast(msg) {
   const t = $("toast"); t.textContent = msg; t.style.display = "block";
   clearTimeout(t._h); t._h = setTimeout(() => t.style.display = "none", 5000);
@@ -335,7 +362,10 @@ function connect() {
           if (b.textContent !== "--") { b.textContent = "stopped"; b.className = "badge"; } });
       render(); tick();
     } else if (m.type === "status") showStatus(m);
-    else if (m.type === "log") addLog(m.line);
+    else if (m.type === "log") {
+      addLog(m.line);
+      if (m.line.includes("[reader] Zeroed:")) setZeroInfo(true, m.line.slice(0, 8));
+    }
     else if (m.type === "loghistory") { $("log").textContent = ""; m.lines.forEach(addLog); }
     else if (m.type === "recordings") showFiles(m.files);
   };

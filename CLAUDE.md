@@ -48,6 +48,12 @@ other stdout lines are messages. The UI depends on this; keep it compatible.
 `--csv-wait` (with `--csv`) opens the file but writes no rows until SIGUSR1;
 the UI starts the reader at Start (boards connect during the start delay)
 and sends SIGUSR1 when collecting begins (later of: delay over, first data).
+Zero: SIGUSR2 makes each board's current orientation its reference `q0`
+(reader prints `Zeroed: board 1 board 2`). Displayed / JSON angles are then
+`conj(q0)*q`, and "between" is the change in board 2's orientation seen from
+board 1 since the Zero. CSV keeps absolute roll/pitch/yaw and appends
+`roll0_deg,pitch0_deg,yaw0_deg` (zeroed). A gap (> 0.25 s of lost data)
+re-levels roll/pitch from gravity but keeps yaw. UI: `/api/zero` + Zero button.
 
 ## UI
 
