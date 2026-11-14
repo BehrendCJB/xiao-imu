@@ -30,7 +30,7 @@ Serial line, one per sample: `t_ms,ax,ay,az,gx,gy,gz,backlog`
 BLE notify characteristic `8f1c0003-4b6e-4a8e-9f3a-2d6c5e7a1b00`, 18 bytes,
 `struct` format `<I6hH` (ms, milli-g x3, 0.1 deg/s x3, backlog).
 Battery: firmware measures every 10 s (P0.14 held LOW, divider on P0.31,
-`ADC_FULL_SCALE_V` / `VBAT_CAL` in the sketch). USB sends a `BAT <mV>` line;
+`ADC_FULL_SCALE_V` = 3.3 (verified with a meter) / `VBAT_CAL` in the sketch). USB sends a `BAT <mV>` line;
 BLE has characteristic `8f1c0004-...-2d6c5e7a1b00` (uint16 mV, read + notify),
 which the bridge turns into the same `BAT <mV>` line. The reader adds
 `bat_mv` to its JSON; the UI converts mV to % with a LiPo curve.

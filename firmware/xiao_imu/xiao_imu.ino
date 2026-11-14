@@ -52,7 +52,8 @@
 #endif
 #define BATTERY_PERIOD_MS 10000
 #define VBAT_DIVIDER (1510.0f / 510.0f)
-#define ADC_FULL_SCALE_V 3.6f   // nRF52 ADC default range (0.6 V ref, gain 1/6)
+#define ADC_FULL_SCALE_V 3.3f   // mbed core: ADC full scale = VDD (3.3 V); checked
+                                // 2026-11-14: 4.47 V shown x 3.3/3.6 = 4.10 V vs 4.078 V meter
 #define VBAT_CAL 1.000f         // fine-tune against a multimeter if needed
 
 const uint32_t PERIOD_US = 1000000UL / SAMPLE_HZ;
