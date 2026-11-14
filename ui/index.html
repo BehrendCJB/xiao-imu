@@ -167,7 +167,12 @@ const cards = [sensorCard(1), sensorCard(2)];
 const LIPO = [[4200,100],[4150,95],[4110,90],[4080,85],[4020,80],[3980,75],[3950,70],[3910,65],
               [3870,60],[3850,55],[3840,50],[3820,45],[3800,40],[3790,35],[3770,30],[3750,25],
               [3730,20],[3710,15],[3690,10],[3610,5],[3300,0]];
+// These batteries stop charging at about 4.08 V (measured 2026-11-14), not
+// 4.20 V. Stretch the curve above KNEE_MV so FULL_MV reads 100%; below the
+// knee nothing changes, so the low-battery warnings keep their meaning.
+const FULL_MV = 4080, KNEE_MV = 3800;
 function batteryPct(mv) {
+  if (mv > KNEE_MV) mv = KNEE_MV + (mv - KNEE_MV) * (LIPO[0][0] - KNEE_MV) / (FULL_MV - KNEE_MV);
   if (mv >= LIPO[0][0]) return 100;
   for (let i = 1; i < LIPO.length; i++) {
     const [v1, p1] = LIPO[i - 1], [v0, p0] = LIPO[i];

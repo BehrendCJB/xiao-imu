@@ -34,7 +34,8 @@ Battery: firmware measures every 10 s (P0.14 held LOW, divider on P0.31,
 `BOARD_ID` (1.005 / 1.013, meter ÷ panel)). USB sends a `BAT <mV>` line;
 BLE has characteristic `8f1c0004-...-2d6c5e7a1b00` (uint16 mV, read + notify),
 which the bridge turns into the same `BAT <mV>` line. The reader adds
-`bat_mv` to its JSON; the UI converts mV to % with a LiPo curve.
+`bat_mv` to its JSON; the UI converts mV to % with a LiPo curve, stretched above 3.80 V so the
+measured full charge (4.08 V, `FULL_MV` in index.html) reads 100%.
 USB board identity: sending `I` to a board's USB port gets `ID <BOARD_ID>`
 back. The UI asks every `/dev/serial/by-id/*` port before starting the
 reader and passes the ports in board order (Linux numbers ttyACM* in
