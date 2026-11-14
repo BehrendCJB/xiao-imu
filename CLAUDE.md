@@ -34,6 +34,10 @@ Battery: firmware measures every 10 s (P0.14 held LOW, divider on P0.31,
 BLE has characteristic `8f1c0004-...-2d6c5e7a1b00` (uint16 mV, read + notify),
 which the bridge turns into the same `BAT <mV>` line. The reader adds
 `bat_mv` to its JSON; the UI converts mV to % with a LiPo curve.
+USB board identity: sending `I` to a board's USB port gets `ID <BOARD_ID>`
+back. The UI asks every `/dev/serial/by-id/*` port before starting the
+reader and passes the ports in board order (Linux numbers ttyACM* in
+plug-in order); over BLE the names `XIAO-ACCEL-<id>` already fix the order.
 Change all three sides together if the format changes.
 
 `accel_reader --json` prints one JSON object per 100 ms on stdout

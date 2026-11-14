@@ -13,6 +13,7 @@
 //   * Sends over Bluetooth (to ble_bridge.py) and/or USB serial.
 //   * Measures the battery every 10 s: USB gets a "BAT <millivolts>" line,
 //     Bluetooth gets it on the battery characteristic (uint16 mV).
+//   * Answers "I" on USB with "ID <BOARD_ID>" (lets the UI order USB ports).
 //
 // USB serial line format (115200 baud):
 //   t_ms,ax,ay,az,gx,gy,gz,backlog
@@ -167,6 +168,19 @@ void updateBattery(bool force) {
   }
 }
 
+// USB commands from the NUC (one character each):
+//   'I' -> replies "ID <BOARD_ID>", so the UI can tell which board is on
+//          which USB port (Linux numbers the ports in plug-in order).
+void handleSerialCommands() {
+  while (Serial && Serial.available() > 0) {
+    int c = Serial.read();
+    if (c == 'I' || c == 'i') {
+      Serial.print("ID ");
+      Serial.println(BOARD_ID);
+    }
+  }
+}
+
 // ---------- output ----------
 void printSample(const Packet &p) {
   Serial.print(p.s.t_ms);           Serial.print(',');
@@ -278,4 +292,5 @@ void loop() {
 
   sendBuffered();
   updateBattery(false);
+  handleSerialCommands();
 }

@@ -31,8 +31,11 @@ import json
 import os
 import re
 import signal
+import glob
+import select
 import socket
 import sys
+import termios
 import time
 from datetime import datetime
 from pathlib import Path
@@ -62,6 +65,65 @@ def find_reader(explicit):
     found += [p for d in ("Debug", "Release") if (ROOT / d).is_dir()
               for p in (ROOT / d).iterdir() if is_program(p)]
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
+
+
+def ask_board_id(path, timeout=1.5):
+    """Send 'I' to a board on a USB serial port; it answers "ID <n>".
+    Returns n, or None (old firmware, or no answer)."""
+    try:
+        fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        attrs = termios.tcgetattr(fd)
+        attrs[0] = attrs[1] = attrs[3] = 0                       # raw
+        attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+        attrs[4] = attrs[5] = termios.B115200
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+        termios.tcflush(fd, termios.TCIFLUSH)
+        buf, end, next_ask = b"", time.time() + timeout, 0.0
+        while time.time() < end:
+            if time.time() >= next_ask:          # ask again in case it was busy
+                os.write(fd, b"I")
+                next_ask = time.time() + 0.3
+            if select.select([fd], [], [], 0.05)[0]:
+                buf += os.read(fd, 4096)
+                m = re.search(rb"(?:^|[\r\n])ID (\d+)\r?\n", buf)
+                if m:
+                    return int(m.group(1))
+                buf = buf[-200:]
+        return None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
+def usb_ports_by_board():
+    """USB serial ports ordered so slot 1 holds board 1 and slot 2 board 2.
+    Returns (ports, notes) where notes are log messages."""
+    found = sorted(glob.glob("/dev/serial/by-id/*")) or sorted(glob.glob("/dev/ttyACM*"))
+    slots, unknown, notes = {}, [], []
+    for path in found:
+        bid = ask_board_id(path)
+        short = os.path.basename(os.path.realpath(path))
+        if bid in (1, 2) and bid not in slots:
+            slots[bid] = path
+            notes.append(f"board {bid} is on {short}")
+        else:
+            unknown.append(path)
+            notes.append(f"{short} did not say which board it is (old firmware?)"
+                         if bid is None else f"{short} also says board {bid}: check BOARD_ID")
+    for path in unknown:                 # fill the gaps in port order
+        for slot in (1, 2):
+            if slot not in slots:
+                slots[slot] = path
+                break
+    if not slots:
+        return [], notes
+    # The reader takes ports by position; a missing board gets a placeholder
+    # it will report as not available.
+    return [slots.get(1, "(no-board-1)"), slots.get(2, "(no-board-2)")], notes
 
 
 def lan_addresses():
@@ -253,6 +315,13 @@ class Session:
         await self.push_state()
         try:
             ports = []
+            if mode == "usb":
+                ports, notes = await asyncio.get_running_loop().run_in_executor(
+                    None, usb_ports_by_board)
+                for n in notes:
+                    await self.add_log(f"[ui] USB: {n}")
+                if not ports:
+                    await self.add_log("[ui] USB: no boards found")
             if mode in ("ble", "sim"):
                 ports = BRIDGE_PORTS
                 t0 = time.time()

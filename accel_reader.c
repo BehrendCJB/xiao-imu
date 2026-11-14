@@ -200,6 +200,8 @@ static void handle_line(Sensor *s, int idx, const char *line) {
         s->bat_mv = mv;
         return;
     }
+    /* "ID <n>": the board answering the UI's port check; nothing to do. */
+    if (strncmp(line, "ID ", 3) == 0) return;
 
     unsigned long t;
     double a[3], g[3];
