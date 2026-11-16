@@ -20,8 +20,36 @@ Keep that doc in step when behaviour, formats or setup change.
 | `firmware/xiao_imu/xiao_imu.ino` | Current board firmware (accel + gyro, 104 Hz, BLE + USB, ~40 s buffer) |
 | `firmware/xiao_accel/xiao_accel.ino` | Old USB-only accel firmware (`x,y,z` lines); reader still accepts it |
 | `.project`, `.cproject` | Eclipse CDT **Managed Build** project named `accelerometer_1` (not CMake) |
+| `analysis/` | Offline motion analysis of recorded CSVs (Python 3 + numpy, scipy, matplotlib), see below |
 
 Each `.ino` must stay alone in a folder of the same name (Arduino IDE rule).
+
+## Motion analysis (analysis/)
+
+Boards are worn on the backs of the hands (board 1 left, board 2 right by
+default), flat, component side up, +x toward the fingers (`--finger-axis`
+if not). Runs on recorded CSVs, not live:
+`python3 analysis/analyze.py swim|shot <csv> [--hands left,right] [--sync start|tap]`
+writes `<csv stem>_analysis/` (summary.txt, summary.json, one PNG per hand).
+Deps (agreed 2026-11-16): `pip3 install --user --break-system-packages numpy scipy matplotlib`.
+
+- `imu.py`: load CSV per board (board_ms time, split at gaps > 0.25 s,
+  resample to 104 Hz), orientation = gyro integration + tilt-drift removal
+  (20 s window mean of world accel = gravity). Not Madgwick: hand
+  acceleration fooled it by 12-22 deg on synthetic strokes; this gives ~1-2.
+  Hand angles: finger pitch, hand roll, palm direction; world linear accel.
+- `swim.py`: cycle period from gyro autocorrelation; cycles between the
+  hand's highest points; per cycle rate, finger pitch, palm angle to
+  backward, hand path relative to body (velocity mean removed, loop
+  closed); `arm_timing` = phase between hands (~50 % alternating).
+- `shot.py`: shot = gyro peak > 400 deg/s with a rest before it; path
+  integrated rest-to-rest with zero velocity at both ends; release = peak
+  wrist snap; release angle, speed, rise, dip, finger pitch.
+- `synth.py`: synthetic swim/shot CSVs with known truth. After changing the
+  analysis, check: `python3 analysis/synth.py swim /tmp/s.csv` then
+  `analyze.py swim /tmp/s.csv` (expect ~10 cycles, period 1.4 s, depth and
+  fore-aft ~1.2 m, palm angle ~29 deg, timing ~50 %); same for `shot`
+  (release angle ~58 deg, speed ~1.5 m/s, rise ~0.58 m).
 
 ## Data format (contract between firmware, bridge and reader)
 
